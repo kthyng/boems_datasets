@@ -64,7 +64,7 @@ def test_region_coastwatch():
     assert region.data_by_dataset('ucsdHfrE6') is not None
 
 def test_station_coastwatch():
-    reader = ErddapReader(known_server='coastwatch')
+    reader = ErddapReader(known_server='coastwatch', parallel=False)
     kw = {'min_time': '2019-1-1', 'max_time': '2019-1-2'}
     dataset_id = 'ucsdHfrE6'
     station = reader.stations(dataset_ids=dataset_id, kw=kw)

@@ -4,31 +4,35 @@ import multiprocessing
 import pandas as pd
 import xarray as xr
 import logging
+from os import path
 
 # Capture warnings in log
 logging.captureWarnings(True)
 
 # formatting for logfile
 formatter = logging.Formatter('%(asctime)s %(message)s','%a %b %d %H:%M:%S %Z %Y')
-name = 'log'
-logfilename = name + '.txt'
+name = 'reader_erddap'
+# logfilename = path.join(name + '.log')
+logfilename = path.join('..','logs', name + '.log')
 loglevel=logging.WARNING
 
 # set up logger file
 handler = logging.FileHandler(logfilename)
 handler.setFormatter(formatter)
-logger = logging.getLogger(name)
-logger.setLevel(loglevel)
-logger.addHandler(handler)
+logger_erd = logging.getLogger(name)
+logger_erd.setLevel(loglevel)
+logger_erd.addHandler(handler)
 
 
 class ErddapReader(object):
     
 
-    def __init__(self, known_server='ioos', protocol=None, server=None):
+    def __init__(self, known_server='ioos', protocol=None, server=None, parallel=True):
         
 #         # run checks for KW 
 #         self.kw = kw
+
+        self.parallel = parallel
         
         # either select a known server or input protocol and server string
         if known_server == 'ioos':
@@ -38,11 +42,13 @@ class ErddapReader(object):
             protocol = 'griddap'
             server = 'https://coastwatch.pfeg.noaa.gov/erddap/'
         else:
+            known_server = 'not pre-known server'
             statement = 'either select a known server or input protocol and server string'
             assert (protocol is not None) & (server is not None), statement
         
         self.e = ERDDAP(server=server)
         self.e.protocol = protocol
+        self.e.server = server
                   
         # columns for metadata
         self.columns = ['geospatial_lat_min', 'geospatial_lat_max', 
@@ -52,9 +58,14 @@ class ErddapReader(object):
                'keywords',  # for hf radar
                'id', 'infoUrl', 'institution', 'featureType', 'source', 'sourceUrl']
         
+        # name
+        self.name = 'erddap_%s' % (known_server)
+        
 # #         self.data_type = data_type
 #         self.standard_names = standard_names
 #         # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
+
+
     
     
     @property
@@ -91,8 +102,10 @@ class ErddapReader(object):
                         assert len(search) != len(search2), "standard_name was not found in the search, don't use these dataset_ids"
 
                         dataset_ids.extend(search["Dataset ID"])
-                    except:
-                        pass
+                    except Exception as e:
+                        logger_erd.exception(e)
+                        logger_erd.warning("standard_name was not found in the search, don't use these dataset_ids")
+                        logger_erd.warning('1 search_url %s\n2 search_url %s\n' % (search_url, search_url2))
                         # should go into logger
             #             print('standard_name %s not found' % standard_name)
 
@@ -118,8 +131,8 @@ class ErddapReader(object):
 
                     # if that doesn't work, trying for more general match and just take first returned option
                     except Exception as e:
-                        logger.exception(e)
-                        logger.warning('When searching for a dataset id to match station name %s, the first attempt to match the id did not work.' % (station))
+                        logger_erd.exception(e)
+                        logger_erd.warning('When searching for a dataset id to match station name %s, the first attempt to match the id did not work.' % (station))
                         dataset_id = df.iloc[0]['Dataset ID']
         
 #                         if 'tabs' in org_id:  # don't split
@@ -133,6 +146,9 @@ class ErddapReader(object):
                     dataset_ids.append(dataset_id)
                     
                 self._dataset_ids = list(set(dataset_ids))
+                
+            else:
+                logger_erd.warning('Neither stations nor region approach were used in function dataset_ids.')
                 
             
         return self._dataset_ids
@@ -202,16 +218,20 @@ class ErddapReader(object):
         
         if not hasattr(self, '_meta'):
             
-            downloads = []
-            for dataset_id in self.dataset_ids:
-                downloads.append(self.meta_by_dataset(dataset_id))
+            if self.parallel:
             
-#             # get metadata for datasets
-#             # run in parallel to save time
-#             num_cores = multiprocessing.cpu_count()
-#             downloads = Parallel(n_jobs=num_cores)(
-#                 delayed(self.meta_by_dataset)(dataset_id) for dataset_id in self.dataset_ids
-#             )
+                # get metadata for datasets
+                # run in parallel to save time
+                num_cores = multiprocessing.cpu_count()
+                downloads = Parallel(n_jobs=num_cores)(
+                    delayed(self.meta_by_dataset)(dataset_id) for dataset_id in self.dataset_ids
+                )
+                
+            else:
+
+                downloads = []
+                for dataset_id in self.dataset_ids:
+                    downloads.append(self.meta_by_dataset(dataset_id))
 
             # make dict from individual dicts
             from collections import ChainMap
@@ -255,8 +275,8 @@ class ErddapReader(object):
                         dd = None
                     
             except Exception as e:
-                logger.exception(e)
-                logger.warning('no data to be read in for %s' % dataset_id)
+                logger_erd.exception(e)
+                logger_erd.warning('no data to be read in for %s' % dataset_id)
                 dd = None
         
         elif self.e.protocol == 'griddap':
@@ -276,8 +296,8 @@ class ErddapReader(object):
                     dd = dd.drop_vars(l)
                 
             except Exception as e:
-                logger.exception(e)
-                logger.warning('no data to be read in for %s' % dataset_id)
+                logger_erd.exception(e)
+                logger_erd.warning('no data to be read in for %s' % dataset_id)
                 dd = None
                 
         return (dataset_id, dd)
@@ -287,13 +307,16 @@ class ErddapReader(object):
     def data(self):
         
         if not hasattr(self, '_data'):
-#             downloads = []
-#             for dataset_id in self.dataset_ids:
-#                 downloads.append(self.data_by_dataset(dataset_id))
-            num_cores = multiprocessing.cpu_count()
-            downloads = Parallel(n_jobs=num_cores)(
-                delayed(self.data_by_dataset)(dataset_id) for dataset_id in self.dataset_ids
-            )
+            
+            if self.parallel:
+                num_cores = multiprocessing.cpu_count()
+                downloads = Parallel(n_jobs=num_cores)(
+                    delayed(self.data_by_dataset)(dataset_id) for dataset_id in self.dataset_ids
+                )
+            else:
+                downloads = []
+                for dataset_id in self.dataset_ids:
+                    downloads.append(self.data_by_dataset(dataset_id))
 
 #             if downloads is not None:
             dds = {dataset_id: dd for (dataset_id, dd) in downloads}
@@ -315,6 +338,8 @@ class ErddapReader(object):
         self.kw = kw
                           
 #         self.data_type = data_type
+        if not isinstance(standard_names, list):
+            standard_names = [standard_names]
         self.standard_names = standard_names
         # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
         
