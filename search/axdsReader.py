@@ -9,6 +9,7 @@ import intake
 import shapely.wkt
 import re
 import numpy as np
+import hashlib
 
 
 # Capture warnings in log
@@ -16,23 +17,28 @@ logging.captureWarnings(True)
 
 # formatting for logfile
 formatter = logging.Formatter('%(asctime)s %(message)s','%a %b %d %H:%M:%S %Z %Y')
-name = 'reader_axds'
+log_name = 'reader_axds'
 # logfilename = os.path.join(name + '.log')
-logfilename = os.path.join('..','logs', name + '.log')
+logfilename = os.path.join('..','logs', log_name + '.log')
 loglevel=logging.WARNING
 
 # set up logger file
 handler = logging.FileHandler(logfilename)
 handler.setFormatter(formatter)
-logger_axds = logging.getLogger(name)
+logger_axds = logging.getLogger(log_name)
 logger_axds.setLevel(loglevel)
 logger_axds.addHandler(handler)
 
+# this can be queried with 
+# search.axdsReader.reader
+reader = 'axdsReader'
 
-class axdsReader(object):
+
+
+class axdsReader:
     
 
-    def __init__(self, parallel=True):
+    def __init__(self, parallel=True, catalog_name=None, axds_type='platform2'):
         
         
         self.parallel = parallel
@@ -46,13 +52,33 @@ class axdsReader(object):
 
 
         self.approach = None
+        
+        if catalog_name is None:
+            name = f'{pd.Timestamp.now().isoformat()}'
+            hash_name = hashlib.sha256(name.encode()).hexdigest()[:7]
+            self.catalog_name = os.path.join('..','catalogs', f'catalog_{hash_name}.yml')
+        else:
+            self.catalog_name = catalog_name
+            # if catalog_name already exists, read it in to save time
+            self.catalog
+
+        
+        # can be 'platform2' or 'layer_group'
+        assert axds_type in ['platform2','layer_group'], 'variable `axds_type` must be "platform2" or "layer_group"'
+        self.axds_type = axds_type
+
+        self.url_axds_type = f'{self.url_search_base}&type={self.axds_type}'
+
 
 #         # run checks for KW 
 #         self.kw = kw
         
         
         # name
-#         self.name = 'erddap_%s' % (known_server)
+        self.name = f'axds_{axds_type}'
+
+        self.reader = 'axdsReader'
+
         
     
     def url_query(self, query):
@@ -179,6 +205,13 @@ class axdsReader(object):
                     else:
                         url_module = self.url_builder(self.url_docs_base, dataset_id=module_uuid)
                         search_results_dict[module_uuid] = requests.get(url_module, headers=self.search_headers).json()[0]
+                        
+            condition = (not search_results_dict == {})
+            assertion = f'No datasets fit the input criteria of kw={self.kw} and variables={self.variables}'
+#             assert condition, assertion
+            if not condition:
+                logger_axds.warning(assertion)
+                self._dataset_ids = []
 
             # DON'T SAVE THIS LATER, JUST FOR DEBUGGING
             self._search_results = search_results_dict
@@ -322,7 +355,13 @@ sources:
         if not hasattr(self, '_catalog'):
             
             self.write_catalog()
-            catalog = intake.open_catalog(self.catalog_name)
+            # if we already know there aren't any dataset_ids
+            # don't try to read catalog
+            if (not self.search_results == {}):
+#             if (not self.dataset_ids == []) or (not self.search_results == {}):
+                catalog = intake.open_catalog(self.catalog_name)
+            else:
+                catalog = None
             self._catalog = catalog
             
         return self._catalog
@@ -333,7 +372,10 @@ sources:
         '''Find dataset_ids for server.'''
         
         if not hasattr(self, '_dataset_ids'):
-            self._dataset_ids = list(self.catalog)
+            if self.catalog is not None:
+                self._dataset_ids = list(self.catalog)
+            else:
+                self._dataset_ids = []
                 
         return self._dataset_ids
         
@@ -355,7 +397,10 @@ sources:
                 meta = self.meta_by_dataset(dataset_id)
                 columns = ['download_url'] + list(meta.metadata.keys())  # this only needs to be set once
                 data.append([meta.urlpath] + list(meta.metadata.values()))
-            self._meta = pd.DataFrame(index=self.dataset_ids, columns=columns, data=data)
+            if len(self.dataset_ids) > 0:
+                self._meta = pd.DataFrame(index=self.dataset_ids, columns=columns, data=data)
+            else:
+                self._meta = None
            
         return self._meta       
     
@@ -439,26 +484,37 @@ sources:
     
     
     def all_variables(self):
+        '''Not relevant for layer_group'''
         
         fname = "parameter_group_names.txt"
+        csv_fname = 'axds_platform2_variable_list.csv'
         # read in Axiom Search parameter group names
         # save to file
-        if not os.path.exists(fname):
+        if not os.path.exists(csv_fname):
             os.system('curl -sSL -H "Accept: application/json" "https://search.axds.co/v2/search" | jq -r \'.tags["Parameter Group"][] | "\(.label) \(.count)"\' > parameter_group_names.txt')
         
-        # read in parameter group names
-        f = open(fname, "r")
-        parameters_temp = f.readlines()
-        f.close()
-#         parameters = [parameter.strip('\n') for parameter in parameters]
-        parameters = {}
-        for parameter in parameters_temp:
-            parts = parameter.strip('\n').split()
-            name = ' '.join(parts[:-1])
-            count = parts[-1]
-            parameters[name] = count
+            # read in parameter group names
+            f = open(fname, "r")
+            parameters_temp = f.readlines()
+            f.close()
+    #         parameters = [parameter.strip('\n') for parameter in parameters]
+            parameters = {}
+            for parameter in parameters_temp:
+                parts = parameter.strip('\n').split()
+                name = ' '.join(parts[:-1])
+                count = parts[-1]
+                parameters[name] = count
+
+            df = pd.DataFrame()
+            df['variable'] = parameters.keys()
+            df['count'] = parameters.values()
+            df = df.set_index('variable')
+            df.to_csv(csv_fname)
             
-        return parameters
+        else:
+            df = pd.read_csv(csv_fname, index_col='variable')
+            
+        return df
         
     
     def search_variables(self, variables):
@@ -479,20 +535,26 @@ sources:
 
         r = re.compile(search)
         
-        parameters = self.all_variables()
+        df = self.all_variables()
+        parameters = df.index
 
-        matches = list(filter(r.match, list(parameters.keys())))
+        matches = list(filter(r.match, parameters))
 
         # return parameters that match input variable strings
-        return {k: parameters[k] for k in matches}
-    
+        return df.loc[matches].sort_values('count', ascending=False)        
+
     
     def check_variables(self, variables, verbose=False):
+        
+        assertion = f'Variables are only used to filter the search for \
+                    \n`axds_type="platform2". Currently, \
+                    \naxds_type={self.axds_type}.'
+        assert self.axds_type == 'platform2', assertion           
         
         if not isinstance(variables, list):
             variables = [variables]
             
-        parameters = list(self.all_variables().keys())
+        parameters = list(self.all_variables().index)
         
         # for a variable to exactly match a parameter 
         # this should equal 1
@@ -502,9 +564,11 @@ sources:
         
         condition = np.allclose(count,1)
         
-        assertion = 'The input variables are not exact matches to parameter groups. \
-                     \nCheck all parameter group values with `reader.all_variables()` \
-                     \nor search parameter group values with `reader.search_variables(variables)`.'
+        assertion = f'The input variables are not exact matches to parameter groups. \
+                     \nCheck all parameter group values with `axdsReader().all_variables()` \
+                     \nor search parameter group values with `axdsReader().search_variables({variables})`.\
+                     \n\n Try some of the following variables:\n{str(self.search_variables(variables))}'
+
         assert condition, assertion
         
         if condition and verbose:
@@ -512,25 +576,30 @@ sources:
          
     
     # Search for stations by region
-    def region(self, kw, axds_type='platform2', variables=None, catalog_name=None):
-        '''HOW TO INCORPORATE VARIABLE NAMES?'''
+class region(axdsReader):
+#     def region(self, kw, axds_type='platform2', variables=None):
+#         '''HOW TO INCORPORATE VARIABLE NAMES?'''
         
+    def __init__(self, kwargs):
+        ax_kwargs = {'catalog_name': kwargs.get('catalog_name', None),
+                     'parallel': kwargs.get('parallel', True),
+                     'axds_type': kwargs.get('axds_type', 'platform2')
+                    }
+        axdsReader.__init__(self, **ax_kwargs)
+        
+        kw = kwargs['kw']
+        variables = kwargs.get('variables', None)
+
         self.approach = 'region'
         
         self._stations = None
         
-        if catalog_name is None:
-            self.catalog_name = os.path.join('..','catalogs',f'catalog_region_{pd.Timestamp.now().isoformat()[:19]}.yml')
-        else:
-            self.catalog_name = catalog_name
-            # if catalog_name already exists, read it in to save time
-            self.catalog
+#         # can be 'platform2' or 'layer_group'
+#         assert axds_type in ['platform2','layer_group'], 'variable `axds_type` must be "platform2" or "layer_group"'
+#         self.axds_type = axds_type
         
-        # can be 'platform2' or 'layer_group'
-        assert axds_type in ['platform2','layer_group'], 'variable `axds_type` must be "platform2" or "layer_group"'
-        self.axds_type = axds_type
-        
-        self.url_axds_type = f'{self.url_search_base}&type={self.axds_type}'
+#         self.url_axds_type = f'{self.url_search_base}&type={self.axds_type}'
+
 
         # run checks for KW 
         # check for lon/lat values and time
@@ -548,35 +617,40 @@ sources:
         self.variables = variables
 #         # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
         
-        return self
+#         return self
 
     
-    def stations(self, dataset_ids=None, stations=None, kw=None, axds_type='platform2'):
-        '''
+class stations(axdsReader):
+#     def stations(self, dataset_ids=None, stations=None, kw=None, axds_type='platform2'):
+#         '''
         
-        Use keyword dataset_ids if you already know the database-
-        specific ids. Otherwise, use the keyword stations and the 
-        database-specific ids will be searched for. The station 
-        ids can be input as something like "TABS B" and will be 
-        searched for as "TABS AND B" and has pretty good success.
+#         Use keyword dataset_ids if you already know the database-
+#         specific ids. Otherwise, use the keyword stations and the 
+#         database-specific ids will be searched for. The station 
+#         ids can be input as something like "TABS B" and will be 
+#         searched for as "TABS AND B" and has pretty good success.
         
-        Treat dataset_ids and stations the same since either way we 
-        need to search for them. Have both to match the erddap 
-        syntax.
+#         Treat dataset_ids and stations the same since either way we 
+#         need to search for them. Have both to match the erddap 
+#         syntax.
         
-        WHAT ABOUT VARIABLES?
-        '''
+#         WHAT ABOUT VARIABLES?
+#         '''
         
+    def __init__(self, kwargs):
+        ax_kwargs = {'catalog_name': kwargs.get('catalog_name', None),
+                     'parallel': kwargs.get('parallel', True),
+                     'axds_type': kwargs.get('axds_type', 'platform2')}
+        axdsReader.__init__(self, **ax_kwargs)
+        
+        kw = kwargs.get('kw', None)
+        dataset_ids = kwargs.get('dataset_ids', None)
+        stations = kwargs.get('stations', [])
+
         self.approach = 'stations'
-        
-        # can be 'platform2' or 'layer_group'
-        assert axds_type in ['platform2','layer_group'], 'variable `axds_type` must be "platform2" or "layer_group"'
-        self.axds_type = axds_type
-
-        self.url_axds_type = f'{self.url_search_base}&type={self.axds_type}'
 
         
-        self.catalog_name = os.path.join('..','catalogs',f'catalog_stations_{pd.Timestamp.now().isoformat()[:19]}.yml')
+#         self.catalog_name = os.path.join('..','catalogs',f'catalog_stations_{pd.Timestamp.now().isoformat()[:19]}.yml')
         
 #         # we want all the data associated with stations
 #         self.standard_names = None
@@ -592,12 +666,14 @@ sources:
         # assert that dataset_ids can't be something if axds_type is layer_group
         # use stations instead, and don't use module uuid, use layer_group uuid
         
-        if stations is not None:
+        if not stations == []:
             if not isinstance(stations, list):
                 stations = [stations]
         self._stations = stations
             
 #         self.dataset_ids
+
+        self.variables = None
             
         
         # CHECK FOR KW VALUES AS TIMES
@@ -605,7 +681,3 @@ sources:
             kw = {'min_time': '1900-01-01', 'max_time': '2100-12-31'}
             
         self.kw = kw
-#         print(self.kwself.)
-        
-            
-        return self

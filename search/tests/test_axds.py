@@ -3,27 +3,22 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import xarray as xr
-import pytest
 
 # CHECK PARALLEL AND NOT
 # CHECK CATALOG
-
-@pytest.fixture
-def reader():
-    return axdsReader()
+# TEST inputting catalog file
 
 
 ## Test Platforms, stations ##
 
-
 def test_station_platforms_1dataset_id_alltime():
-#     reader = axdsReader()
+    reader = axdsReader()
     station = reader.stations(axds_type='platform2', dataset_ids='c61eecf1-1c0e-5287-b6fb-a92b51b14d54')
     assert station.kw == {'min_time': '1900-01-01', 'max_time': '2100-12-31'}
     assert station.dataset_ids == ['c61eecf1-1c0e-5287-b6fb-a92b51b14d54']
 
 def test_station_platforms_1dataset_id():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2020-8-1', 'max_time': '2020-8-2'}
     dataset_ids = 'c61eecf1-1c0e-5287-b6fb-a92b51b14d54'
     station = reader.stations(axds_type='platform2', dataset_ids=dataset_ids, kw=kw)
@@ -36,7 +31,7 @@ def test_station_platforms_1dataset_id():
  np.datetime64('2020-08-02T23:50:21.000000000')])
     
 def test_station_platforms_2dataset_ids():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2020-9-20', 'max_time': '2020-9-20'}
     dataset_ids = ['c61eecf1-1c0e-5287-b6fb-a92b51b14d54',
                    '7d4ea195-aeda-5c78-aa0d-d4f77ba0ad95']
@@ -44,7 +39,7 @@ def test_station_platforms_2dataset_ids():
     assert stations.dataset_ids == dataset_ids
     
 def test_station_platforms_1station():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2020-8-1', 'max_time': '2020-8-2'}
     stationname = 'ng645-20200730T1909'
     dataset_id = 'c61eecf1-1c0e-5287-b6fb-a92b51b14d54'
@@ -55,7 +50,7 @@ def test_station_platforms_1station():
 ## Test layer_groups, stations ##
 
 def test_station_layer_group_1station_alltime():
-#     reader = axdsReader()
+    reader = axdsReader()
     # 1 SFBOFS layer_group
     stations = ['04784baa-6be8-4aa7-b039-269f35e92e91']
     # SFBOFS module uuid
@@ -66,7 +61,7 @@ def test_station_layer_group_1station_alltime():
     assert station.dataset_ids == dataset_ids
 
 def test_station_layer_group_1station():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2021-4-1', 'max_time': '2021-4-2'}
     # 1 SFBOFS layer_group
     stations = ['04784baa-6be8-4aa7-b039-269f35e92e91']
@@ -79,10 +74,10 @@ def test_station_layer_group_1station():
     assert isinstance(station.data[dataset_ids[0]], xr.Dataset)
     assert (list(station.data[dataset_ids[0]].ocean_time[[0,-1]].values) == 
                        [np.datetime64('2021-04-01T00:00:00.000000000'),
- np.datetime64('2021-04-02T23:00:00.000000000')])
+                        np.datetime64('2021-04-02T23:00:00.000000000')])
     
 def test_station_layer_group_2dataset_ids():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2021-4-1', 'max_time': '2021-4-2'}
     # 2 SFBOFS layer_groups
     stations = ['04784baa-6be8-4aa7-b039-269f35e92e91', 
@@ -103,7 +98,7 @@ def test_variables():
 ## Test Platforms, region ##
 
 def test_region_platforms_no_variables():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2015-1-1', 'max_time': '2015-1-2',
          'min_lon': -98, 'max_lon': -97.5, 'min_lat': 28.5, 'max_lat': 29}
     dataset_ids = ['1b046f4e-5dd6-5ba7-8d70-743e2edeb1df',
@@ -113,7 +108,7 @@ def test_region_platforms_no_variables():
     assert region.kw == kw
 
 def test_region_platforms_variables():
-#     reader = axdsReader()
+    reader = axdsReader()
     kw = {'min_time': '2019-1-1', 'max_time': '2021-1-2',
          'min_lon': -98, 'max_lon': -95, 'min_lat': 28, 'max_lat': 29}
     dataset_ids = ['612c17e4-3306-5d51-abb2-7e890fe49896']

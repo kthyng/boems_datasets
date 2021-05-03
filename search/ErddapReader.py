@@ -5,26 +5,33 @@ import pandas as pd
 import xarray as xr
 import logging
 from os import path
+import re
+import numpy as np
+
 
 # Capture warnings in log
 logging.captureWarnings(True)
 
 # formatting for logfile
 formatter = logging.Formatter('%(asctime)s %(message)s','%a %b %d %H:%M:%S %Z %Y')
-name = 'reader_erddap'
+log_name = 'reader_erddap'
 # logfilename = path.join(name + '.log')
-logfilename = path.join('..','logs', name + '.log')
+logfilename = path.join('..','logs', log_name + '.log')
 loglevel=logging.WARNING
 
 # set up logger file
 handler = logging.FileHandler(logfilename)
 handler.setFormatter(formatter)
-logger_erd = logging.getLogger(name)
+logger_erd = logging.getLogger(log_name)
 logger_erd.setLevel(loglevel)
 logger_erd.addHandler(handler)
 
+# this can be queried with 
+# search.ErddapReader.reader
+reader = 'ErddapReader'
 
-class ErddapReader(object):
+
+class ErddapReader:
     
 
     def __init__(self, known_server='ioos', protocol=None, server=None, parallel=True):
@@ -33,6 +40,7 @@ class ErddapReader(object):
 #         self.kw = kw
 
         self.parallel = parallel
+    
         
         # either select a known server or input protocol and server string
         if known_server == 'ioos':
@@ -40,12 +48,16 @@ class ErddapReader(object):
             server = 'http://erddap.sensors.ioos.us/erddap'
         elif known_server == 'coastwatch':
             protocol = 'griddap'
-            server = 'https://coastwatch.pfeg.noaa.gov/erddap/'
+            server = 'http://coastwatch.pfeg.noaa.gov/erddap'
+        elif known_server is not None:
+            statement = 'either select a known server or input protocol and server string'
+            assert (protocol is not None) & (server is not None), statement
         else:
-            known_server = 'not pre-known server'
+            known_server = server.strip('/erddap').strip('http://').replace('.','_')
             statement = 'either select a known server or input protocol and server string'
             assert (protocol is not None) & (server is not None), statement
         
+        self.known_server = known_server
         self.e = ERDDAP(server=server)
         self.e.protocol = protocol
         self.e.server = server
@@ -59,12 +71,13 @@ class ErddapReader(object):
                'id', 'infoUrl', 'institution', 'featureType', 'source', 'sourceUrl']
         
         # name
-        self.name = 'erddap_%s' % (known_server)
+        self.name = f'erddap_{known_server}'
+        
+        self.reader = 'ErddapReader'
         
 # #         self.data_type = data_type
 #         self.standard_names = standard_names
 #         # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
-
 
     
     
@@ -75,46 +88,49 @@ class ErddapReader(object):
         if not hasattr(self, '_dataset_ids'):
             
             # This should be a region search
-            if (self.standard_names is not None) and (self._stations is None): 
+            if self.approach == 'region':
         
                 # find all the dataset ids which we will use to get the data
                 # This limits the search to our keyword arguments in kw which should 
                 # have min/max lon/lat/time values
                 dataset_ids = []
-                for standard_name in self.standard_names:
+                if self.variables is not None:
+                    for variable in self.variables:
 
-                    # find and save all dataset_ids associated with standard_name
-                    # if standard_name is not found, this will return all search 
-                    # results. Since we want to know if a standard_name was not 
-                    # found, we also do the subsequent search that doesn't include
-                    # the standard_name constraint, and compare the length of the 
-                    # results. If they are the same length, then we conclude that 
-                    # standard_name was not found in the search.
+                        # find and save all dataset_ids associated with variable
+                        search_url = self.e.get_search_url(response="csv", **self.kw, 
+                                                           variableName=variable, 
+                                                           items_per_page=10000)
+
+                        try:
+                            search = pd.read_csv(search_url)
+                            dataset_ids.extend(search["Dataset ID"])
+                        except Exception as e:
+                            logger_erd.exception(e)
+                            logger_erd.warning(f"variable {variable} was not found in the search")
+                            logger_erd.warning(f'search_url: {search_url}')
+
+                else:
+                    
+                    # find and save all dataset_ids associated with variable
                     search_url = self.e.get_search_url(response="csv", **self.kw, 
-                                                       standard_name=standard_name, 
-                                                       items_per_page=10000)
-                    search_url2 = self.e.get_search_url(response="csv", **self.kw, 
                                                        items_per_page=10000)
 
                     try:
                         search = pd.read_csv(search_url)
-                        search2 = pd.read_csv(search_url2)
-                        assert len(search) != len(search2), "standard_name was not found in the search, don't use these dataset_ids"
-
                         dataset_ids.extend(search["Dataset ID"])
                     except Exception as e:
                         logger_erd.exception(e)
-                        logger_erd.warning("standard_name was not found in the search, don't use these dataset_ids")
-                        logger_erd.warning('1 search_url %s\n2 search_url %s\n' % (search_url, search_url2))
-                        # should go into logger
-            #             print('standard_name %s not found' % standard_name)
+                        logger_erd.warning(f"nothing found in the search")
+                        logger_erd.warning(f'search_url: {search_url}')
 
-
+                    
                 # only need a dataset id once since we will check them each for all standard_names
                 self._dataset_ids = list(set(dataset_ids))
             
             # This should be a search for the station names
-            elif self._stations is not None:
+            elif self.approach == 'stations':
+#             elif self._stations is not None:
                 
                 # search by station name for each of stations
                 dataset_ids = []
@@ -123,7 +139,12 @@ class ErddapReader(object):
                     # terms together
                     url = self.e.get_search_url(response="csv", items_per_page=5, search_for=station)
 
-                    df = pd.read_csv(url)
+                    try:
+                        df = pd.read_csv(url)
+                    except Exception as e:
+                        logger_erd.exception(e)
+                        logger_erd.warning(f'search url {url} did not work for station {station}.')
+                        continue
     
                     # first try for exact station match
                     try:
@@ -182,22 +203,22 @@ class ErddapReader(object):
                 item = int(item)
             items.append(item)
             
-        if self.standard_names is not None:
-            # In case the variable is named differently from the standard names, 
-            # we back out the variable names here for each dataset. This also only 
-            # returns those names for which there is data in the dataset.
-            varnames = self.e.get_var_by_attr(
-                dataset_id=dataset_id,
-                standard_name=lambda v: v in self.standard_names
-            )
-        else:
-            varnames = None
+#         if self.standard_names is not None:
+#             # In case the variable is named differently from the standard names, 
+#             # we back out the variable names here for each dataset. This also only 
+#             # returns those names for which there is data in the dataset.
+#             varnames = self.e.get_var_by_attr(
+#                 dataset_id=dataset_id,
+#                 standard_name=lambda v: v in self.standard_names
+#             )
+#         else:
+#             varnames = None
 
         ## include download link ##
         self.e.dataset_id = dataset_id
         if self.e.protocol == 'tabledap':
-            if self.standard_names is not None:
-                self.e.variables = ["time","longitude", "latitude", "station"] + varnames
+            if self.variables is not None:
+                self.e.variables = ["time","longitude", "latitude", "station"] + self.variables
             # set the same time restraints as before
             self.e.constraints = {'time<=': self.kw['max_time'], 'time>=': self.kw['min_time'],}
             download_url = self.e.get_download_url(response='csvp')
@@ -210,7 +231,7 @@ class ErddapReader(object):
             download_url = self.e.get_download_url(response='opendap')
         
         # add erddap server name
-        return {dataset_id: [self.e.server, download_url] + items + [varnames]}
+        return {dataset_id: [self.e.server, download_url] + items + [self.variables]}
     
       
     @property
@@ -250,7 +271,7 @@ class ErddapReader(object):
 
         download_url = self.meta.loc[dataset_id, 'download_url']
         # data variables in ds that are not the variables we searched for
-        varnames = self.meta.loc[dataset_id, 'variable names']
+#         varnames = self.meta.loc[dataset_id, 'variable names']
 
         if self.e.protocol == 'tabledap':
 
@@ -263,13 +284,13 @@ class ErddapReader(object):
                 # Drop cols and rows that are only NaNs.
                 dd = dd.dropna(axis='index', how='all').dropna(axis='columns', how='all')
 
-                if varnames is not None:
+                if self.variables is not None:
                     # check to see if there is any actual data
-                    # this is a bit convoluted because the column names are the varnames 
+                    # this is a bit convoluted because the column names are the variable names 
                     # plus units so can't match 1 to 1.
                     datacols = 0  # number of columns that represent data instead of metadata
                     for col in dd.columns:
-                        datacols += [varname in col for varname in varnames].count(True)
+                        datacols += [varname in col for varname in self.variables].count(True)
                     # if no datacols, we can skip this one.
                     if datacols == 0:
                         dd = None
@@ -291,8 +312,8 @@ class ErddapReader(object):
                     dd = dd.sel(longitude=slice(self.kw['min_lon'],self.kw['max_lon']))
 
                 # use variable names to drop other variables (should. Ido this?)
-                if varnames is not None:
-                    l = set(dd.data_vars) - set(varnames)
+                if self.variables is not None:
+                    l = set(dd.data_vars) - set(self.variables)
                     dd = dd.drop_vars(l)
                 
             except Exception as e:
@@ -326,49 +347,184 @@ class ErddapReader(object):
             self._data = dds
 
         return self._data
+    
+    
+    def count(self,url):
+        try:
+            return len(pd.read_csv(url))    
+        except:
+            return np.nan
+
+    
+    def all_variables(self):
+        '''Return a list of all possible variables.'''
+        
+        file_name_counts = f'erddap_variable_list_{self.known_server}.csv'
+        
+        if path.exists(file_name_counts):
+            return pd.read_csv(file_name_counts, index_col='variable')
+        else:
+            # This took 10 min running in parallel for ioos
+            # 2 min for coastwatch
+            url = f'{self.e.server}/categorize/variableName/index.csv?page=1&itemsPerPage=100000'
+            df = pd.read_csv(url)
+#             counts = []
+#             for url in df.URL:
+#                 counts.append(self.count(url))
+            num_cores = multiprocessing.cpu_count()
+            counts = Parallel(n_jobs=num_cores)(
+                delayed(self.count)(url) for url in df.URL
+            )
+            dfnew = pd.DataFrame()
+            dfnew['variable'] = df['Category']
+            dfnew['count'] = counts
+            dfnew = dfnew.set_index('variable')
+            # remove nans
+            if (dfnew.isnull().sum() > 0).values:
+                dfnew = dfnew[~dfnew.isnull().values].astype(int)
+            dfnew.to_csv(file_name_counts)
+        
+        return dfnew
+
+
+    def search_variables(self, variables):
+        '''Find valid variables names to use.
+        
+        Call with `search_variables()` to return the list of possible names.
+        Call with `search_variables('salinity')` to return relevant names.
+        '''
+        
+        if not isinstance(variables, list):
+            variables = [variables]
+        
+        # set up search for input variables
+        search = f"(?i)"
+        for variable in variables:
+            search += f".*{variable}|"
+        search = search.strip('|')
+
+        r = re.compile(search)
+        
+        # just get the variable names
+        df = self.all_variables()
+        parameters = df.index
+
+        matches = list(filter(r.match, parameters))
+
+        # return parameters that match input variable strings
+        return df.loc[matches].sort_values('count', ascending=False)
+    
+    
+    def check_variables(self, variables, verbose=False):
+        
+        if not isinstance(variables, list):
+            variables = [variables]
+            
+#         parameters = list(self.all_variables().keys())
+        parameters = list(self.all_variables().index)
+        
+        # for a variable to exactly match a parameter 
+        # this should equal 1
+        count = []
+        for variable in variables:
+            count += [parameters.count(variable)]
+        
+        condition = np.allclose(count,1)
+        
+        assertion = f'The input variables are not exact matches to ok variables for known_server {self.known_server}. \
+                     \nCheck all parameter group values with `ErddapReader().all_variables()` \
+                     \nor search parameter group values with `ErddapReader().search_variables({variables})`.\
+                     \n\n Try some of the following variables:\n{str(self.search_variables(variables))}'# \
+#                      \nor run `ErddapReader().check_variables("{variables}")'
+        assert condition, assertion
+        
+        if condition and verbose:
+            print('all variables are matches!')
 
     
     # Search for stations by region
-    def region(self, kw, standard_names):
-        
+class region(ErddapReader):
+#     def region(self, kw, variables=None):
+    
+    def __init__(self, kwargs):
+        er_kwargs = {'known_server': kwargs.get('known_server', 'ioos'),
+                     'protocol': kwargs.get('protocol', None),
+                     'server': kwargs.get('server', None),
+                     'parallel': kwargs.get('parallel', True)}
+        ErddapReader.__init__(self, **er_kwargs)
+
+        kw = kwargs['kw']
+        variables = kwargs.get('variables', None)
+
+        self.approach = 'region'
+
         self._stations = None
-        
+
         # run checks for KW 
         # check for lon/lat values and time
         self.kw = kw
-                          
-#         self.data_type = data_type
-        if not isinstance(standard_names, list):
-            standard_names = [standard_names]
-        self.standard_names = standard_names
-        # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
-        
-        return self
+
+        if (variables is not None) and (not isinstance(variables, list)):
+            variables = [variables]
+
+        # make sure variables are on parameter list
+        if variables is not None:
+            self.check_variables(variables)
+        self.variables = variables
+
+
+# #         self.data_type = data_type
+#         if not isinstance(standard_names, list):
+#             standard_names = [standard_names]
+#         self.standard_names = standard_names
+    # DOESN'T CURRENTLY LIMIT WHICH VARIABLES WILL BE FOUND ON EACH SERVER
+
+#     return self
 
     
-    def stations(self, dataset_ids=None, stations=None, kw=None):
-        '''
+class stations(ErddapReader):
+#     def stations(self, dataset_ids=None, stations=None, kw=None):
+#         '''
         
-        Use keyword dataset_ids if you already know the database-
-        specific ids. Otherwise, use the keyword stations and the 
-        database-specific ids will be searched for. The station 
-        ids can be input as something like "TABS B" and will be 
-        searched for as "TABS AND B" and has pretty good success.
-        '''
+#         Use keyword dataset_ids if you already know the database-
+#         specific ids. Otherwise, use the keyword stations and the 
+#         database-specific ids will be searched for. The station 
+#         ids can be input as something like "TABS B" and will be 
+#         searched for as "TABS AND B" and has pretty good success.
+#         '''
+        
+    
+    def __init__(self, kwargs):
+        er_kwargs = {'known_server': kwargs.get('known_server', 'ioos'),
+                     'protocol': kwargs.get('protocol', None),
+                     'server': kwargs.get('server', None),
+                     'parallel': kwargs.get('parallel', True)}
+        ErddapReader.__init__(self, **er_kwargs)
+        
+        kw = kwargs.get('kw', None)
+        dataset_ids = kwargs.get('dataset_ids', None)
+        stations = kwargs.get('stations', [])
+
+        self.approach = 'stations'
         
         # we want all the data associated with stations
-        self.standard_names = None
+#         self.standard_names = None
+        self.variables = None
         
         if dataset_ids is not None:
             if not isinstance(dataset_ids, list):
                 dataset_ids = [dataset_ids]
             self._dataset_ids = dataset_ids 
         
-        if stations is not None:
+        if not stations == []:
             if not isinstance(stations, list):
                 stations = [stations]
             self._stations = stations
             self.dataset_ids
+        else:
+            self._stations = stations
+
+
             
         
         # CHECK FOR KW VALUES AS TIMES
@@ -376,7 +532,3 @@ class ErddapReader(object):
             kw = {'min_time': '1900-01-01', 'max_time': '2100-12-31'}
             
         self.kw = kw
-#         print(self.kwself.)
-        
-            
-        return self

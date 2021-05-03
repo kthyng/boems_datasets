@@ -1,6 +1,8 @@
 import search
-from search.ErddapReader import ErddapReader
-from search.axdsReader import axdsReader
+# from search.ErddapReader import ErddapReader
+# from search.axdsReader import axdsReader
+# from search.localReader import localReader
+
 import pandas as pd
 
 # # data functions by data_type
@@ -9,78 +11,51 @@ import pandas as pd
 # DATASOURCES_PLATFORM = [sensors, argo]  # has gliders
 
 # GO THROUGH ALL KNOWN SOURCES?
-SOURCES = [ErddapReader(known_server='ioos'),
-           ErddapReader(known_server='coastwatch'),
-           axdsReader()]
+# SOURCES = [ErddapReader(known_server='ioos'),
+#            ErddapReader(known_server='coastwatch'),
+_SOURCES = [search.ErddapReader,
+           search.axdsReader,
+           search.localReader]
+
+OPTIONS = {'ErddapReader': {'known_server': ['ioos', 'coastwatch']},
+           'axdsReader': {'axds_type': ['platform2', 'layer_group']}}
 
 # MAYBE SHOULD BE ABLE TO INITIALIZE THE CLASS WITH ONLY METADATA OR DATASET NAMES?
 # to skip looking for the datasets
 
 class Data(object):
     
-    def __init__(self, kw=None, standard_names=None, data_types=None):
+    def __init__(self, **kwargs):# kw=None, variables=None):
         
-        # default kw to all U.S. and most recent 4 weeks
-        if kw is None:
-            now = pd.Timestamp.now().normalize()
+        # set up a dictionary for general input kwargs
+        exclude_keys = ['ErddapReader', 'axdsReader', 'localReader']
+        kwargs_all = {k: kwargs[k] for k in set(list(kwargs.keys())) 
+                                          - set(exclude_keys)}
+
+        self.kwargs_all = kwargs_all
+        
+        # default approach is region
+        if not 'approach' in self.kwargs_all:
+            self.kwargs_all['approach'] = 'region'
             
-            # Gulf of Mexico
+        assertion = '`approach` has to be "region" or "stations"'
+        assert self.kwargs_all['approach'] in ['region','stations'], assertion
+            
+        if not 'kw' in self.kwargs_all:
             kw = {
-                "min_lon": -99,
-                "max_lon": -88, 
-                "min_lat": 20, 
-                "max_lat": 30, 
-                "min_time": (now - pd.Timedelta('4W')).strftime('%Y-%m-%d'),
-                "max_time": (now).strftime('%Y-%m-%d'),
-            }
+                "min_lon": -124.0,
+                "max_lon": -122.0,
+                "min_lat": 38.0,
+                "max_lat": 40.0,
+                "min_time": '2021-4-1',
+                "max_time": '2021-4-2',
+            }            
+            self.kwargs_all['kw'] = kw
             
-
-#             # full U.S.
-#             kw = {
-#                 "min_lon": -195,
-#                 "max_lon": -60, 
-#                 "min_lat": 17, 
-#                 "max_lat": 80, 
-#                 "min_time": (now - pd.Timedelta('4W')).strftime('%Y-%m-%d'),
-#                 "max_time": (now).strftime('%Y-%m-%d'),
-#             }
-
-        self.kw = kw
         
-#         self.only_meta = only_meta
+        self.kwargs = kwargs 
         
-        # default to all reasonable options
-        # Note that `sea_ice_concentration` is not a standard name but 
-        # we do want to include it from NSIDC.
-        if standard_names is None:
-            
-            standard_names = ['sea_water_temperature', 
-                              'sea_water_practical_salinity', 
-                              'sea_water_speed', 
-                              'sea_water_velocity_to_direction', 
-                              'sea_surface_height', 
-                              'sea_surface_height_above_sea_level', 
-                              'sea_surface_height_amplitude_due_to_geocentric_ocean_tide',
-                              'surface_eastward_sea_water_velocity',  # hfradar
-                              'surface_northward_sea_water_velocity',  # hfradar
-                              'sea_ice_speed',
-                              'direction_of_sea_ice_velocity',
-                              'eastward_sea_ice_velocity',
-                              'northward_sea_ice_velocity',
-                              'sea_ice_extent',
-                              'sea_ice_area_fraction'  # multiply by 100 to get sea_ice_concentration which is not a standard name
-                              ]
-            
-        self.standard_names = standard_names
-
-        # default to including all data types
-        # These should map to the type of plot that will be possible.
-        if data_types is None:
-
-            data_types = ['sensor', 'platform', 'grid']
-            
-        self.data_types = data_types
-        
+        self.sources
         
     @property
     def sources(self):
@@ -89,14 +64,99 @@ class Data(object):
             
         if not hasattr(self, '_sources'):
 
+            # allow user to override what readers to use
+            if 'readers' in self.kwargs_all.keys():
+                SOURCES = self.kwargs_all['readers']
+                if not isinstance(SOURCES, list):
+                    SOURCES = [SOURCES]
+            else:
+                SOURCES = _SOURCES
+
             # loop over data sources to set them up
             sources = []
             for source in SOURCES:
+#                 print(source.reader)
                 
-                # setup reader
-                reader = source.region(kw=self.kw, standard_names=self.standard_names)
-                
-                sources.append(reader)
+                # in case of important options for readers
+                # but the built in options are ignored for a reader
+                # if one is input in kwargs[source.reader]
+                if (source.reader in OPTIONS.keys()):
+                    reader_options = OPTIONS[source.reader]
+                    reader_key = list(reader_options.keys())[0]
+                    # if the user input their own option for this, use it instead
+                    # this makes it loop once
+                    if (source.reader in self.kwargs.keys()) and (reader_key in self.kwargs[source.reader]):
+#                         reader_values = [None]
+                        reader_values = self.kwargs[source.reader][reader_key]
+                    else:
+                        reader_values = list(reader_options.values())[0]
+                else:
+                    reader_key = None
+                    # this is to make it loop once for cases without
+                    # extra options like localReader
+                    reader_values = [None]
+                if not isinstance(reader_values, list):
+                    reader_values = [reader_values]
+
+                # catch if the user is putting in a set of variables to match
+                # the set of reader options
+                if (source.reader in self.kwargs) and ('variables' in self.kwargs[source.reader]):
+                    variables_values = self.kwargs[source.reader]['variables']
+                    if not isinstance(variables_values, list):
+                        variables_values = [variables_values]                    
+#                     if len(reader_values) == variables_values:
+#                         variables_values
+                else:
+                    variables_values = [None]*len(reader_values)
+
+                # catch if the user is putting in a set of dataset_ids to match
+                # the set of reader options
+                if (source.reader in self.kwargs) and ('dataset_ids' in self.kwargs[source.reader]):
+                    dataset_ids_values = self.kwargs[source.reader]['dataset_ids']
+                    if not isinstance(dataset_ids_values, list):
+                        dataset_ids_values = [dataset_ids_values]                    
+#                     if len(reader_values) == variables_values:
+#                         variables_values
+                else:
+                    dataset_ids_values = [None]*len(reader_values)            
+
+                for option, variables, dataset_ids in zip(reader_values,variables_values,dataset_ids_values):
+                    # setup reader with kwargs for that reader
+                    # prioritize input kwargs over default args
+                    # NEED TO INCLUDE kwargs that go to all the readers
+                    args = {}
+                    args_in = {**args, 
+                               **self.kwargs_all, 
+#                                reader_key: option,
+#                                **self.kwargs[source.reader],
+                               }
+
+                    if source.reader in self.kwargs.keys():
+                        args_in = {**args_in, 
+                                   **self.kwargs[source.reader],
+                                  }
+                        
+                    args_in = {**args_in,
+                              reader_key: option}
+                        
+                    # deal with variables separately
+                    args_in = {**args_in, 
+                               'variables': variables,
+                              }    
+                        
+                    # deal with dataset_ids separately
+                    args_in = {**args_in, 
+                               'dataset_ids': dataset_ids,
+                              }    
+
+
+                    if self.kwargs_all['approach'] == 'region':
+                        reader = source.region(args_in)
+                    elif self.kwargs_all['approach'] == 'stations':
+                        reader = source.stations(args_in)
+                        
+
+                    sources.append(reader)
 
             self._sources = sources
         
