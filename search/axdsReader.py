@@ -11,11 +11,13 @@ import re
 import numpy as np
 import hashlib
 
+os.makedir("../catalogs", exist_ok=True)  # succeeds even if directory exists.
 
 # Capture warnings in log
 logging.captureWarnings(True)
 
 # formatting for logfile
+os.makedir("../logs", exist_ok=True)  # succeeds even if directory exists.
 formatter = logging.Formatter('%(asctime)s %(message)s','%a %b %d %H:%M:%S %Z %Y')
 log_name = 'reader_axds'
 # logfilename = os.path.join(name + '.log')

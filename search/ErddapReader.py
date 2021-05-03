@@ -4,7 +4,7 @@ import multiprocessing
 import pandas as pd
 import xarray as xr
 import logging
-from os import path
+from os
 import re
 import numpy as np
 
@@ -13,10 +13,11 @@ import numpy as np
 logging.captureWarnings(True)
 
 # formatting for logfile
+os.makedir("../logs", exist_ok=True)  # succeeds even if directory exists.
 formatter = logging.Formatter('%(asctime)s %(message)s','%a %b %d %H:%M:%S %Z %Y')
 log_name = 'reader_erddap'
-# logfilename = path.join(name + '.log')
-logfilename = path.join('..','logs', log_name + '.log')
+# logfilename = os.path.join(name + '.log')
+logfilename = os.path.join('..','logs', log_name + '.log')
 loglevel=logging.WARNING
 
 # set up logger file
@@ -361,7 +362,7 @@ class ErddapReader:
         
         file_name_counts = f'erddap_variable_list_{self.known_server}.csv'
         
-        if path.exists(file_name_counts):
+        if os.path.exists(file_name_counts):
             return pd.read_csv(file_name_counts, index_col='variable')
         else:
             # This took 10 min running in parallel for ioos
